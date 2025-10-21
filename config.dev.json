@@ -1,0 +1,14 @@
+{
+    "yolo_model_path": "/Users/piotrswiecik/dev/ives/coronary/trained_models/rt_detr/RT_detr_x_best.pt",
+    "yolo_cache_dir": "/Users/piotrswiecik/dev/ives/coronary/medsam_pipeline/data/yolo_cache",
+    "arcade_syntax_base_dir": "/Users/piotrswiecik/dev/ives/coronary/medsam_pipeline/data/arcade/syntax",
+    "medsam_workdir": "/Users/piotrswiecik/dev/ives/coronary/medsam_pipeline/data/workdir",
+    "medsam_base": "/Users/piotrswiecik/dev/ives/coronary/medsam_pipeline/medsam_vit_b.pth",
+    "yolo_confidence_threshold": 0.25,
+    "image_size": 1024,
+    "medsam_num_epochs": 10,
+    "medsam_val_freq": 5,
+    "medsam_checkpoint_freq": 5,
+    "medsam_batch_size": 2,
+    "medsam_num_workers": 2
+}

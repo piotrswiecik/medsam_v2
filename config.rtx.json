@@ -1,0 +1,14 @@
+{
+    "yolo_model_path": "/home/ives/piotr/medsam_pipeline/yolo_model/RT_detr_x_best.pt",
+    "yolo_cache_dir": "/home/ives/piotr/medsam_pipeline/data/yolo_cache",
+    "arcade_syntax_base_dir": "/home/ives/piotr/arcade/syntax",
+    "medsam_workdir": "/home/ives/piotr/medsam_pipeline/data/workdir",
+    "medsam_base": "/home/ives/piotr/medsam_pipeline/medsam_vit_b.pth",
+    "yolo_confidence_threshold": 0.25,
+    "image_size": 1024,
+    "medsam_num_epochs": 10,
+    "medsam_val_freq": 5,
+    "medsam_checkpoint_freq": 5,
+    "medsam_batch_size": 2,
+    "medsam_num_workers": 2
+}
