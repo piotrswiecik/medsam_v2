@@ -19,3 +19,4 @@ class Config(BaseModel):
     medsam_checkpoint_freq: int
     medsam_batch_size: int
     medsam_num_workers: int
+    use_augmentations: bool = True

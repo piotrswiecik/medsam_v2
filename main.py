@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--mode", type=str, choices=[Mode.TRAIN.value, Mode.PREDICT.value], default=Mode.TRAIN.value, help="Training or prediction mode")
     parser.add_argument("--image_path", type=str, help="Path to the image for prediction (required in prediction mode)")
     parser.add_argument("--checkpoint_path", type=str, help="Path to SAM model checkpoint for prediction (required in prediction mode)")
+    parser.add_argument("--use-augmentations", action="store_true", help="Whether to use data augmentations during training")
     args = parser.parse_args()
 
     print(f"[INFO] Hello from medsam-pipeline! Using config from: {args.config}")

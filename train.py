@@ -18,10 +18,32 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import time
 import gdown
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 from typedefs import Config
 
 SPLITS = ["train", "val", "test"]
+
+AUGMENTATION_PARAMS = {
+    "HORIZONTAL_FLIP_P": 0.5,
+    "VERTICAL_FLIP_P": 0.5,
+    "RANDOM_ROTATE_90_P": 0.5,
+    "ROTATE_LIMIT": 15,
+    "ROTATE_P": 0.3,
+    "ELASTIC_TRANSFORM_ALPHA": 1.0,
+    "ELASTIC_TRANSFORM_SIGMA": 50.0,
+    "ELASTIC_TRANSFORM_P": 0.2,
+    "GRID_DISTORTION_P": 0.2,
+    "OPTICAL_DISTORTION_LIMIT": 0,
+    "OPTICAL_DISTORTION_P": 0.2,
+    "RANDOM_BRC_B_LIMIT": 0.1,
+    "RANDOM_BRC_C_LIMIT": 0.1,
+    "RANDOM_BRC_P": 0.3,
+    "GAUSS_NOISE_P": 0.2,
+    "BLUR_LIMIT": 5,
+    "BLUR_P": 0.2,
+}
 
 
 class MetricsTracker:
@@ -279,12 +301,14 @@ class CombinedLoss(nn.Module):
 
 
 class SyntaxDataset:
-    def __init__(self, data_root, split, bbox_cache_path, img_size=1024, original_size=512):
+    def __init__(self, data_root, split, bbox_cache_path, img_size=1024, original_size=512, use_augmentations=True):
         self.data_root = Path(data_root)
         self.split = split
         self.img_size = img_size
         self.original_size = original_size
         self.scale_factor = img_size / original_size
+        self.use_augmentations = use_augmentations
+        self.augmentation_params = AUGMENTATION_PARAMS # Fixed for testing
         
         ann_path = self.data_root / split / 'annotations' / f'{split}.json'
         self.coco = COCO(str(ann_path))
@@ -293,6 +317,50 @@ class SyntaxDataset:
         with open(bbox_cache_path) as f:
             cache_data = json.load(f)
             self.bbox_cache = cache_data['bboxes']
+
+        if self.use_augmentations:
+            self.augment = A.Compose(
+                [
+                    A.HorizontalFlip(p=self.augmentation_params["HORIZONTAL_FLIP_P"]),
+                    A.VerticalFlip(p=self.augmentation_params["VERTICAL_FLIP_P"]),
+                    A.RandomRotate90(p=self.augmentation_params["RANDOM_ROTATE_90_P"]),
+                    A.Rotate(
+                        limit=self.augmentation_params["ROTATE_LIMIT"],
+                        p=self.augmentation_params["ROTATE_P"],
+                    ),
+                    A.ElasticTransform(
+                        alpha=self.augmentation_params["ELASTIC_TRANSFORM_ALPHA"],
+                        sigma=self.augmentation_params["ELASTIC_TRANSFORM_SIGMA"],
+                        p=self.augmentation_params["ELASTIC_TRANSFORM_P"],
+                    ),
+                    A.GridDistortion(p=self.augmentation_params["GRID_DISTORTION_P"]),
+                    A.OpticalDistortion(
+                        distort_limit=self.augmentation_params["OPTICAL_DISTORTION_LIMIT"],
+                        p=self.augmentation_params["OPTICAL_DISTORTION_P"],
+                    ),
+                    A.RandomBrightnessContrast(
+                        brightness_limit=self.augmentation_params["RANDOM_BRC_B_LIMIT"],
+                        contrast_limit=self.augmentation_params["RANDOM_BRC_C_LIMIT"],
+                        p=self.augmentation_params["RANDOM_BRC_P"],
+                    ),
+                    A.GaussNoise(p=self.augmentation_params["GAUSS_NOISE_P"]),
+                    A.Blur(
+                        blur_limit=self.augmentation_params["BLUR_LIMIT"],
+                        p=self.augmentation_params["BLUR_P"],
+                    ),
+                    A.Normalize(mean=(0.5,), std=(0.5,)),
+                    ToTensorV2(),
+                ],
+                additional_targets={"mask": "mask"},
+            )
+        else:
+            self.augment = A.Compose(
+                [
+                    A.Normalize(mean=(0.5,), std=(0.5,)),
+                    ToTensorV2(),
+                ],
+                additional_targets={"mask": "mask"},
+            )
         
         print(f"[INFO] Loaded {split} split: {len(self.image_ids)} images")
         print(f"[INFO] Bbox scaling: {original_size} → {img_size} (×{self.scale_factor})")
@@ -330,14 +398,19 @@ class SyntaxDataset:
             mask[seg_mask > 0] = ann['category_id']
         
         # Normalize image
-        image_normalized = image.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
-        image_normalized = (image_normalized - mean) / std
+        # image_normalized = image.astype(np.float32) / 255.0
+        # mean = np.array([0.485, 0.456, 0.406])
+        # std = np.array([0.229, 0.224, 0.225])
+        # image_normalized = (image_normalized - mean) / std
         
         # Convert to tensors
-        image_tensor = torch.from_numpy(image_normalized).permute(2, 0, 1).float()
-        mask_tensor = torch.from_numpy(mask).long()
+        # image_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
+        # mask_tensor = torch.from_numpy(mask).long()
+        # bbox_tensor = torch.tensor(scaled_bbox, dtype=torch.float32)
+
+        augmented = self.augment(image=image, mask=mask)
+        image_tensor = augmented["image"]
+        mask_tensor = augmented["mask"].long()
         bbox_tensor = torch.tensor(scaled_bbox, dtype=torch.float32)
         
         return {
