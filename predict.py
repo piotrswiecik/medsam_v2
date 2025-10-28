@@ -17,12 +17,25 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import time
 from segment_anything import sam_model_registry
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 from train import MedSAMSyntax
 from typedefs import Config
 
 
 def run_prediction(config: Config, image_path: str, checkpoint_path: str):
+    """
+    Run inference on a single image using trained MedSAMSyntax model.
+    
+    CRITICAL: This function uses the EXACT SAME preprocessing pipeline as training:
+    - RGB conversion: cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    - Resize: cv2.resize to 1024x1024
+    - Normalization: A.Normalize(mean=(0.5,), std=(0.5,)) -> maps to [-1, 1]
+    
+    DO NOT use ImageNet normalization (mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+    as medical images are fundamentally different from natural RGB images.
+    """
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Load base SAM model (without weights first, we'll load trained weights later)
@@ -40,30 +53,67 @@ def run_prediction(config: Config, image_path: str, checkpoint_path: str):
     image_path = Path(image_path)
     if not image_path.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
-    
+
     print(f"[INFO] Loading image: {image_path.name}")
     image = cv2.imread(str(image_path))
     original_image = image.copy()
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     original_shape = image.shape[:2]
     print(f"   [INFO] Original shape: {original_shape}")
-    
+
     # Resize to 1024x1024
     if image.shape[:2] != (1024, 1024):
         image = cv2.resize(image, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+
+    # Run YOLO to get bbox (same as training)
+    print(f"[INFO] Loading YOLO model: {config.yolo_model_path}")
+    yolo_model = YOLO(str(config.yolo_model_path))
+
+    print(f"[INFO] Running YOLO inference...")
+    results = yolo_model.predict(
+        source=str(image_path),
+        imgsz=config.image_size,
+        conf=config.yolo_confidence_threshold,
+        verbose=False
+    )
+
+    # Extract combined bbox (same logic as train.py:562-589)
+    if not results or len(results) == 0 or results[0].boxes is None or len(results[0].boxes) == 0:
+        print(f"   [WARNING] No YOLO detections, using full image bbox")
+        bbox = np.array([[0, 0, 1024, 1024]], dtype=np.float32)
+        num_detections = 0
+        avg_conf = 0.0
+    else:
+        boxes = results[0].boxes
+        all_coords = boxes.xyxy.cpu().numpy()
+        all_confs = boxes.conf.cpu().numpy()
+
+        x_min = int(all_coords[:, 0].min())
+        y_min = int(all_coords[:, 1].min())
+        x_max = int(all_coords[:, 2].max())
+        y_max = int(all_coords[:, 3].max())
+
+        bbox = np.array([[x_min, y_min, x_max, y_max]], dtype=np.float32)
+        num_detections = len(boxes)
+        avg_conf = float(all_confs.mean())
+
+        print(f"   [INFO] YOLO detected {num_detections} objects (avg conf: {avg_conf:.3f})")
+        print(f"   [INFO] Combined bbox: [{x_min}, {y_min}, {x_max}, {y_max}]")
+
+    # Normalize using the SAME approach as training
+    # Training uses: A.Normalize(mean=(0.5,), std=(0.5,))
+    # This maps [0, 255] -> [0, 1] -> [-1, 1]
+    print(f"[INFO] Normalizing image (matching training pipeline)")
+    transform = A.Compose([
+        A.Normalize(mean=(0.5,), std=(0.5,)),
+        ToTensorV2(),
+    ])
     
-    # Normalize
-    image_normalized = image.astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    image_normalized = (image_normalized - mean) / std
+    transformed = transform(image=image)
+    image_tensor = transformed["image"].unsqueeze(0).to(device)
     
-    # Convert to tensor
-    image_tensor = torch.from_numpy(image_normalized).permute(2, 0, 1).float()
-    image_tensor = image_tensor.unsqueeze(0).to(device)
-    
-    # Full image bbox (fallback if no YOLO available)
-    bbox = np.array([[0, 0, 1024, 1024]], dtype=np.float32)
+    print(f"   [INFO] Image tensor shape: {image_tensor.shape}")
+    print(f"   [INFO] Image tensor range: [{image_tensor.min():.3f}, {image_tensor.max():.3f}]")
     
     print(f"🔧 Loading checkpoint: {Path(checkpoint_path).name}")
 
@@ -114,8 +164,14 @@ def run_prediction(config: Config, image_path: str, checkpoint_path: str):
     axes[2].imshow(pred_mask, cmap='tab20', alpha=0.5, vmin=0, vmax=25)
     axes[2].set_title('Overlay (Prediction + Image)')
     axes[2].axis('off')
-    
+
     plt.tight_layout()
     plt.show()
-    
+
+    # save prediction image 
+    if not os.path.exists(os.path.join(config.medsam_workdir, "pred")):
+        os.makedirs(os.path.join(config.medsam_workdir, "pred"))
+    plt.savefig(os.path.join(config.medsam_workdir, "pred", f"{image_path.stem}_prediction.png"))
+    print(f"Prediction visualization saved to: {os.path.join(config.medsam_workdir, 'pred', f'{image_path.stem}_prediction.png')}")
+
     return pred_mask
