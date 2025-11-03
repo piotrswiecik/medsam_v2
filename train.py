@@ -255,6 +255,70 @@ def compute_class_weights(class_pixel_counts, num_classes):
     return weights
 
 
+class FocalLoss(nn.Module):
+    """Focal Loss for addressing class imbalance by down-weighting easy examples"""
+
+    def __init__(self, num_classes, alpha=None, gamma=2.0, reduction="mean"):
+        """
+        Args:
+            num_classes: Number of classes
+            alpha: Class weights (tensor of shape [num_classes]) or None
+            gamma: Focusing parameter. Higher values focus more on hard examples
+            reduction: 'mean' or 'sum'
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.gamma = gamma
+        self.reduction = reduction
+
+        if alpha is not None:
+            self.register_buffer("alpha", alpha)
+        else:
+            self.alpha = None
+
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: (B, num_classes=26, H, W) logits
+            targets: (B, H, W) class indices
+
+        Returns:
+            focal_loss: scalar
+        """
+        # inputs: (B, C, H, W)
+        # targets: (B, H, W)
+
+        log_probs = F.log_softmax(inputs, dim=1)  # (B, C, H, W)
+        probs = torch.exp(log_probs)  # (B, C, H, W)
+
+        # Convert targets to one-hot: (B, H, W) -> (B, H, W, C) -> (B, C, H, W)
+        targets_one_hot = F.one_hot(targets.long(), num_classes=self.num_classes)  # (B, H, W, C)
+        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+
+        # Extract probs (B, C, H, W) -> (B, H, W)
+        target_probs = (probs * targets_one_hot).sum(dim=1)  # (B, H, W)
+        target_log_probs = (log_probs * targets_one_hot).sum(dim=1)  # (B, H, W)
+
+        focal_weight = (1 - target_probs) ** self.gamma  # (B, H, W)
+
+        if self.alpha is not None:
+            # alpha: (C,) -> (1, C, 1, 1)
+            # targets_one_hot: (B, C, H, W)
+            # Result: (B, C, H, W) -> sum over C -> (B, H, W)
+            alpha_t = (self.alpha.view(1, -1, 1, 1) * targets_one_hot).sum(dim=1)  # (B, H, W)
+            focal_weight = focal_weight * alpha_t  # (B, H, W)
+
+        # Focal loss: (B, H, W)
+        loss = -focal_weight * target_log_probs  # (B, H, W)
+
+        if self.reduction == "mean":
+            return loss.mean(), {}
+        elif self.reduction == "sum":
+            return loss.sum(), {}
+        else:
+            return loss, {}
+
+
 class CombinedLoss(nn.Module):
     """Combined Weighted CE + Dice Loss for semantic segmentation"""
 
@@ -888,7 +952,7 @@ def run_pipeline(config: Config):
         num_classes=26,
     ).to(device)
 
-    print(f"[INFO] MedSAMSyntax model created (with improved semantic head)")
+    print(f"[INFO] MedSAMSyntax model created")
     print(f"   [INFO] Num classes: 26")
     print(f"   [INFO] Device: {device}")
     print(
@@ -905,13 +969,19 @@ def run_pipeline(config: Config):
         f"   [INFO] Weight ratio (class 12 / class 6): {class_weights[12] / class_weights[6]:.2f}×"
     )
 
-    criterion = CombinedLoss(
+    # criterion = CombinedLoss(
+    #     num_classes=26,
+    #     class_weights=class_weights.to(device),
+    #     ce_weight=0.5,
+    #     dice_weight=0.5,
+    # )
+
+    criterion = FocalLoss(
         num_classes=26,
-        class_weights=class_weights.to(device),
-        ce_weight=0.5,
-        dice_weight=0.5,
+        alpha=class_weights.to(device),
+        gamma=2.0,
+        reduction="mean",
     )
-    print(f"\n[INFO] CombinedLoss created (0.5 CE + 0.5 Dice)")
 
     trainable_params = (
         list(medsam_syntax.image_encoder.parameters())
@@ -978,12 +1048,10 @@ def run_pipeline(config: Config):
     print(f"  Semantic logits: {semantic_logits.shape}")
     print(f"  IoU predictions: {iou_pred.shape}")
 
-    loss, loss_dict = criterion(semantic_logits, test_masks)
+    loss, _ = criterion(semantic_logits, test_masks)
 
     print(f"\nLoss computation:")
     print(f"  Total loss: {loss.item():.4f}")
-    print(f"  CE loss: {loss_dict['ce']:.4f}")
-    print(f"  Dice loss: {loss_dict['dice']:.4f}")
 
     pred_mask = torch.argmax(semantic_logits[0], dim=0).cpu().numpy()
     gt_mask = test_masks[0].cpu().numpy()
@@ -1025,7 +1093,7 @@ def run_pipeline(config: Config):
         # TRAINING
         medsam_syntax.train()
         epoch_loss = 0.0
-        epoch_loss_components = {"ce": 0.0, "dice": 0.0, "total": 0.0}
+        epoch_loss_components = defaultdict(float)
         train_metrics = MetricsTracker(num_classes=26)
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS} [Train]")
@@ -1047,7 +1115,7 @@ def run_pipeline(config: Config):
             train_metrics.update(semantic_logits.detach(), masks)
 
             epoch_loss += loss.item()
-            for key in epoch_loss_components:
+            for key in loss_dict:
                 epoch_loss_components[key] += loss_dict[key]
 
             if batch_idx % 10 == 0:
@@ -1073,8 +1141,10 @@ def run_pipeline(config: Config):
 
         print(f"\n[INFO] Epoch {epoch+1} Training Results ({epoch_duration:.1f}s):")
         print(
-            f"   [INFO] Loss: {avg_loss:.4f} (CE: {epoch_loss_components['ce']:.4f}, Dice: {epoch_loss_components['dice']:.4f})"
+            f"   [INFO] Loss: {avg_loss:.4f}"
         )
+        if epoch_loss_components:
+            print(f"   [INFO] Loss components: {epoch_loss_components}")
         print(
             f"   [INFO] Metrics: mIoU={train_metrics_epoch['mean_iou']:.3f}, mF1={train_metrics_epoch['mean_f1']:.3f}, Acc={train_metrics_epoch['accuracy']:.3f}"
         )

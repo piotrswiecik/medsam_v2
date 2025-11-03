@@ -22,6 +22,13 @@ from albumentations.pytorch import ToTensorV2
 
 from train import MedSAMSyntax
 from typedefs import Config
+from preprocessing import apply_clahe
+
+# CLAHE preprocessing configuration
+# TODO: Move to config
+USE_CLAHE = True
+CLAHE_CLIP_LIMIT = 2.5
+CLAHE_TILE_GRID_SIZE = (8, 8)
 
 
 def run_prediction(config: Config, image_path: str, checkpoint_path: str):
@@ -57,6 +64,14 @@ def run_prediction(config: Config, image_path: str, checkpoint_path: str):
     # Resize to 1024x1024
     if image.shape[:2] != (1024, 1024):
         image = cv2.resize(image, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+
+    # Apply CLAHE preprocessing (same as training)
+    # TODO: Move to config
+    if USE_CLAHE:
+        print(
+            f"[INFO] Applying CLAHE preprocessing (clip_limit={CLAHE_CLIP_LIMIT}, tile_size={CLAHE_TILE_GRID_SIZE})"
+        )
+        image = apply_clahe(image, CLAHE_CLIP_LIMIT, CLAHE_TILE_GRID_SIZE)
 
     # Run YOLO to get bbox (same as training)
     print(f"[INFO] Loading YOLO model: {config.yolo_model_path}")

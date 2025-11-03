@@ -1,5 +1,5 @@
 {
-    "yolo_model_path": "/home/ives/piotr/medsam_pipeline/yolo_model/RT_detr_x_best.pt",
+    "yolo_model_path": "/home/ives/piotr/medsam_pipeline/data/yolo/RT_detr_x_best.pt",
     "yolo_cache_dir": "/home/ives/piotr/medsam_pipeline/data/yolo_cache",
     "arcade_syntax_base_dir": "/home/ives/piotr/arcade/syntax",
     "medsam_workdir": "/home/ives/piotr/medsam_pipeline/data/workdir",
